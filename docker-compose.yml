@@ -2,13 +2,12 @@ services:
   garmin-mcp:
     build: .
     container_name: garmin-mcp
-    volumes:
-      - /root/.config/garmin/connect-personal-api-key:/root/.config/garmin/connect-personal-api-key:ro
+    # No API key is configured here: each MCP client sends its own key in the
+    # X-Garmin-Api-Key (or Authorization: Bearer) header.
     networks:
       - dex_default
     ports:
       - "8091:8091"
-    command: ["python", "garmin_mcp.py"]  # assumes main() uses transport="http"
     restart: unless-stopped
 
 networks:
