@@ -1,18 +1,53 @@
+import hashlib
+import os
+from pathlib import Path
+
 from fastmcp import FastMCP
-from garmin_personal_api import (
-    GarminPersonalApiClient,
-    PersonalApiAuthenticator,
-    resolve_api_key,
-)
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_headers
+from garmin_personal_api import GarminPersonalApiClient, PersonalApiAuthenticator
 
 mcp = FastMCP("garmin-personal")
 
+# Bearer tokens are cached per API key (by fingerprint) so several clients with
+# different keys don't overwrite each other's cache. The key itself is never
+# written to disk.
+TOKEN_CACHE_DIR = Path(os.environ.get("GARMIN_TOKEN_CACHE_DIR", "/tmp/garmin-mcp-tokens"))
+
+API_KEY_HEADER = "x-garmin-api-key"
+
+
+def _api_key_from_request() -> str:
+    """Read the Garmin personal API key sent by the MCP client.
+
+    Accepted, in this order:
+      X-Garmin-Api-Key: <key>
+      Authorization: Bearer <key>
+    """
+    headers = get_http_headers(include={"authorization"})
+    key = headers.get(API_KEY_HEADER, "").strip()
+    if not key:
+        auth = headers.get("authorization", "").strip()
+        scheme, _, value = auth.partition(" ")
+        if scheme.lower() in ("bearer", "apikey"):
+            key = value.strip()
+    if not key:
+        raise ToolError(
+            "No Garmin API key provided. Configure your MCP client to send it in the "
+            "'X-Garmin-Api-Key' header (or 'Authorization: Bearer <key>')."
+        )
+    return key
+
 
 def get_client() -> GarminPersonalApiClient:
-    """Fresh client. The bearer token is cached on disk and only re-fetched
-    when nearly expired (tokens live 24h), so this is cheap."""
-    with PersonalApiAuthenticator() as auth:
-        token = auth.obtain_token(resolve_api_key())
+    """Fresh client for the calling MCP client's API key. The bearer token is
+    cached and only re-fetched when nearly expired (tokens live 24h)."""
+    key = _api_key_from_request()
+    fingerprint = hashlib.sha256(key.encode()).hexdigest()[:32]
+    TOKEN_CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    cache_file = TOKEN_CACHE_DIR / f"{fingerprint}.json"
+    with PersonalApiAuthenticator(bearer_token_cache_file=cache_file) as auth:
+        token = auth.obtain_token(key)
     return GarminPersonalApiClient(token.access_token)
 
 
